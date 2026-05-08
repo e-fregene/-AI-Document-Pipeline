@@ -1,0 +1,37 @@
+[
+  {
+    "customer_id":101,
+    "order_id":5001,
+    "product":"Laptop",
+    "quantity":1,
+    "total":120.5
+  },
+  {
+    "customer_id":101,
+    "order_id":5001,
+    "product":"Mouse",
+    "quantity":1,
+    "total":120.5
+  },
+  {
+    "customer_id":102,
+    "order_id":5002,
+    "product":"Smartphone",
+    "quantity":1,
+    "total":250.0
+  },
+  {
+    "customer_id":102,
+    "order_id":5002,
+    "product":"Charger",
+    "quantity":2,
+    "total":250.0
+  },
+  {
+    "customer_id":102,
+    "order_id":5003,
+    "product":"Headphones",
+    "quantity":1,
+    "total":75.0
+  }
+]
