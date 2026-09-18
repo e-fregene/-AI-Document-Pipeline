@@ -6,8 +6,7 @@ import re
 import json
 from PIL import Image
 
-PDF_PATH = "src/data/MTG_10009588.pdf"
-
+PDF_PATH = "src/data/LenderFeesWorksheetNew.pdf"
 KEY_FIELDS = ["MORTGAGE", "NOTE", "LENDER", "PROPERTY ADDRESS", "DATE", "SIGNATURE"]
 
 OCR_CORRECTIONS = [
@@ -45,6 +44,11 @@ class TesseractExtractor:
         for pattern, replacement in OCR_CORRECTIONS:
             text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
         return re.sub(r'[^a-zA-Z0-9\s,.%-]', '', text)
+    
+    def extract_layout_aware_text(self):
+        """Comapare EasyOCR and PaddleOCR"""
+        reader = easyocr.Reader(['ch_sim','en'])
+        result = reader.readtext('image.jpg')
 
     def extract_fields(self, text: str) -> dict:
         """Pull structured key-value fields from cleaned OCR text using regex."""
@@ -101,5 +105,9 @@ if __name__ == "__main__":
     result = extractor.run()
     print("Extracted Fields:", json.dumps(result["fields"], indent=2))
     print(f"Total words detected: {len(result['words'])}")
-    print("Sample words:", result["words"][:5])
+
+    gray = extractor.preprocess(extractor.render_page())
+    annotated = extractor.draw_bboxes(gray, result["words"], highlight=KEY_FIELDS)
+    Image.fromarray(annotated).show(title="Tesseract")
+
     extractor.close()
