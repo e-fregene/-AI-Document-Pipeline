@@ -16,7 +16,7 @@ from Data_Extract.PyMuPDF_Extraction import PDFExtractor
 load_dotenv()
 
 PDF_PATH = "/Users/ethan/Desktop/-AI-Document-Pipeline/src/data/LenderFeesWorksheetNew.pdf"
-EMBED_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 GEMINI_MODEL = "models/gemini-3.6-flash"
 
 
@@ -103,16 +103,38 @@ def query(index: VectorStoreIndex, question: str) -> str:
     return answer
 
 
+def compare_embedding_models(documents: list[Document]):
+    """Build a retrieval index with each embedding model and compare top chunks per query."""
+    embedding_models = {
+        "MiniLM-L6-v2":  "sentence-transformers/all-MiniLM-L6-v2",
+        "BGE-small-en":  "BAAI/bge-small-en-v1.5",
+        "E5-small-v2":   "intfloat/e5-small-v2",
+    }
+    test_queries = [
+        "What is the loan amount?",
+        "What fees does the borrower pay?",
+        "What is the interest rate?",
+    ]
+
+    for model_name, model_id in embedding_models.items():
+        print(f"\n{'=' * 60}")
+        print(f"MODEL: {model_name}  ({model_id})")
+        print('=' * 60)
+
+        embed_model = HuggingFaceEmbedding(model_name=model_id)
+        splitter = SemanticSplitterNodeParser(embed_model=embed_model)
+        nodes = splitter.get_nodes_from_documents(documents)
+        index = VectorStoreIndex(nodes, embed_model=embed_model)
+        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
+
+        for q in test_queries:
+            print(f"\n  Q: {q}")
+            results = retriever.retrieve(q)
+            for i, r in enumerate(results):
+                print(f"    [{i+1}] score={r.score:.4f} | {r.node.text[:150].strip()}")
+
+
 if __name__ == "__main__":
     docs = load_documents()
-    index = build_index(docs)
-
-    questions = [
-        "What is this document about?",
-        "Who are the borrowers?",
-        "What is the loan amount?",
-    ]
-    for q in questions:
-        query(index, q)
-        print("\n" + "=" * 60 + "\n")
+    compare_embedding_models(docs)
 
