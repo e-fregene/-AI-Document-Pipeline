@@ -4,7 +4,7 @@ from llama_index.llms.groq import Groq
 from llama_index.core.llms import ChatMessage
 
 load_dotenv()
-llm = Groq(model="mixtral-8x7b-32768", api_key=os.getenv("GROQ_API_KEY"))
+llm = Groq(model="qwen/qwen3.8-27b", api_key=os.getenv("GROQ_API_KEY"), max_tokens=500)
 
 def simple_chatbot():
     """

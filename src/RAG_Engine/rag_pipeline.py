@@ -21,7 +21,7 @@ load_dotenv()
 
 PDF_PATH = "/Users/ethan/Downloads/Estimating-the-Cost-of-the-Consumer-Financial-Protection-Bureau-to-Consumers.pdf"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"  # BGE: better domain discrimination. score spread reveals true gaps
-LLM_MODEL = "mixtral-8x7b-32768"
+LLM_MODEL = "qwen/qwen3.8-27b"
 
 
 
@@ -64,11 +64,11 @@ def build_index(documents: list[Document]) -> VectorStoreIndex:
 
 
 def load_model(model: str = LLM_MODEL) -> Groq:
-    """Mixtral-8x7B via Groq API — cloud-hosted Mistral, free tier, no local hardware needed."""
-    return Groq(model=model, api_key=os.getenv("GROQ_API_KEY"))
+    """Qwen3-27B via Groq API — cloud-hosted, free tier, capped to stay within OTPM limits."""
+    return Groq(model=model, api_key=os.getenv("GROQ_API_KEY"), max_tokens=500)
 
 
-def expand_query(question: str, llm: Ollama) -> list[str]:
+def expand_query(question: str, llm: LLM_MODEL) -> list[str]:
     """Ask Gemini to rewrite the question 2 ways to improve retrieval coverage."""
     prompt = (
         "Rewrite this question in 2 different ways to improve document retrieval. "
