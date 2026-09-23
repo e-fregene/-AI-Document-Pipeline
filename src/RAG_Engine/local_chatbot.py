@@ -1,24 +1,16 @@
-from dotenv import load_dotenv
 import os
-
-from llama_index.llms.gemini import Gemini
+from dotenv import load_dotenv
+from llama_index.llms.groq import Groq
 from llama_index.core.llms import ChatMessage
 
-#Retrive API key from env file
 load_dotenv()
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# Initialize the Gemini model
-llm = Gemini(
-    model="models/gemini-3.6-flash",
-
-)
+llm = Groq(model="mixtral-8x7b-32768", api_key=os.getenv("GROQ_API_KEY"))
 
 def simple_chatbot():
     """
-    A simple interactive chatbot using Gemini with LlamaIndex.
+    A simple interactive chatbot using Mistral via Ollama locally.
     """
-    print("🦙 Simple Gemini Chatbot 🦙")
+    print("Mistral Chatbot (local via Ollama)")
     print("Type 'exit' to end the conversation")
     print("-" * 50)
 
@@ -26,7 +18,6 @@ def simple_chatbot():
     messages = []
 
     while True:
-        # Get user input
         user_input = input("\nYou: ")
 
         # Check for exit command
