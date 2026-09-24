@@ -19,7 +19,7 @@ from Data_Extract.OCR_comparisons import render_page, PaddleOCRExtractor
 
 load_dotenv()
 
-PDF_PATH = "/Users/ethan/Downloads/Estimating-the-Cost-of-the-Consumer-Financial-Protection-Bureau-to-Consumers.pdf"
+PDF_PATH = "src/data/Blob File Sample.pdf"
 EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"  # BGE: better domain discrimination. score spread reveals true gaps
 LLM_MODEL = "qwen/qwen3.8-27b"
 
