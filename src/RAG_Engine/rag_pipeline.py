@@ -189,13 +189,17 @@ def rerank(nodes, question: str, top_n: int = 3):
     return reranker.postprocess_nodes(nodes, query_bundle=QueryBundle(question))
 
 
-def query(index: VectorStoreIndex, question: str) -> str:
-    """Full RAG pipeline: expand query → hybrid retrieve → rerank → Mistral answer."""
+def query(index: VectorStoreIndex, question: str, routed_pages: list[dict] = None) -> str:
+    """Full RAG pipeline: predict doc_type → expand query → hybrid retrieve → rerank → answer."""
     llm = load_model()
     embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
 
-    expanded = expand_query(question, llm)
-    nodes = hybrid_retrieve(index, expanded, embed_model)
+    predicted_type = predict_doc_type(question, routed_pages, llm) if routed_pages else None
+    if predicted_type:
+        print(f"Predicted doc_type: {predicted_type}")
+
+    expanded  = expand_query(question, llm)
+    nodes     = hybrid_retrieve(index, expanded, embed_model, doc_type=predicted_type)
     top_nodes = rerank(nodes, question)
 
     context = "\n\n".join(n.node.text for n in top_nodes)
@@ -210,73 +214,17 @@ def query(index: VectorStoreIndex, question: str) -> str:
     return answer
 
 
-def compare_embedding_models(documents: list[Document]):
-    """Build a retrieval index with each embedding model and compare top chunks per query."""
-    embedding_models = {
-        "MiniLM-L6-v2":  "sentence-transformers/all-MiniLM-L6-v2",
-        "BGE-small-en":  "BAAI/bge-small-en-v1.5",
-        "E5-small-v2":   "intfloat/e5-small-v2",
-    }
-    test_queries = [
-        "What is the loan amount?",
-        "What fees does the borrower pay?",
-        "What is the interest rate?",
-    ]
-
-    for model_name, model_id in embedding_models.items():
-        print(f"\n{'=' * 60}")
-        print(f"MODEL: {model_name}  ({model_id})")
-        print('=' * 60)
-
-        embed_model = HuggingFaceEmbedding(model_name=model_id)
-        splitter = SemanticSplitterNodeParser(embed_model=embed_model)
-        nodes = splitter.get_nodes_from_documents(documents)
-        index = VectorStoreIndex(nodes, embed_model=embed_model)
-        retriever = VectorIndexRetriever(index=index, similarity_top_k=3)
-
-        for q in test_queries:
-            print(f"\n  Q: {q}")
-            results = retriever.retrieve(q)
-            for i, r in enumerate(results):
-                print(f"    [{i+1}] score={r.score:.4f} | {r.node.text[:150].strip()}")
-
-
-def run_experiments(index: VectorStoreIndex):
-    """Test retrieval quality across top_k, score threshold, and reranker combos."""
-    experiments = [
-        {"name": "H — Threshold + Rerank", "top_k": 8, "threshold": 0.6, "rerank": True},
-    ]
-    test_queries = [
-        "What is the estimated total cost of CFPB regulations to consumers?",
-        "How does CFPB oversight affect credit availability or loan access?",
-        "What methodology was used to estimate the costs?",
-    ]
-    embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
-    llm = load_model()
-
-    for exp in experiments:
-        print(f"\n{'=' * 60}")
-        print(f"EXPERIMENT {exp['name']}  |  top_k={exp['top_k']}  threshold={exp['threshold']}  reranker={exp['rerank']}")
-        print('=' * 60)
-
-
-        for q in test_queries:
-            expanded = expand_query(q, llm)
-            nodes= hybrid_retrieve(index, expanded, embed_model)
-            top_nodes = rerank(nodes, q)
-
-            print(f"\n  Q: {q}  →  {len(top_nodes)} chunk(s) returned")
-            for i, n in enumerate(top_nodes):
-                score_str = f"{n.score:.4f}" if n.score is not None else "  N/A "
-                print(f"    [{i+1}] score={score_str} | {n.node.text[:120].strip()}")
-
-        print()
-
-
 if __name__ == "__main__":
-    routed   = route_documents(PDF_PATH)
-    grouped  = group_by_doc_id(routed)
-    docs     = documents_from_routed(grouped)
-    index    = build_index(docs)
-    run_experiments(index)
+    routed  = route_documents(PDF_PATH)
+    grouped = group_by_doc_id(routed)
+    docs    = documents_from_routed(grouped)
+    index   = build_index(docs)
+
+    test_questions = [
+        "What does John smith work in",
+        "What is Joe's Total pay",
+        "What did John and mary purchase or borrow? a loan?",
+    ]
+    for question in test_questions:
+        query(index, question, routed_pages=routed)
 
