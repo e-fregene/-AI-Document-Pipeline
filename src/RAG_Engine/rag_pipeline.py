@@ -7,6 +7,7 @@ from llama_index.core import VectorStoreIndex
 from llama_index.core.schema import Document
 from llama_index.core.node_parser import SemanticSplitterNodeParser
 from llama_index.core.retrievers import VectorIndexRetriever
+from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core import QueryBundle
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
@@ -16,6 +17,7 @@ from llama_index.llms.groq import Groq
 from llama_index.retrievers.bm25 import BM25Retriever
 from Data_Extract.PyMuPDF_Extraction import PDFExtractor
 from Data_Extract.OCR_comparisons import render_page, PaddleOCRExtractor
+from document_processor import route_documents
 
 load_dotenv()
 
@@ -24,6 +26,77 @@ EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"  # BGE: better domain discrimination
 LLM_MODEL = "qwen/qwen3.8-27b"
 
 
+
+
+def group_by_doc_id(routed_pages: list[dict]) -> list[dict]:
+    """Merge consecutive pages sharing the same doc_id into one combined text block."""
+    groups = {}
+    for page in routed_pages:
+        doc_id = page["doc_id"]
+        if doc_id not in groups:
+            groups[doc_id] = {
+                "doc_id":      doc_id,
+                "page_type":   page["page_type"],
+                "source_file": page["source_file"],
+                "page_start":  page["page_num"],
+                "page_end":    page["page_num"],
+                "text":        page["text"],
+            }
+        else:
+            groups[doc_id]["text"]     += "\n\n" + page["text"]
+            groups[doc_id]["page_end"]  = page["page_num"]
+    return list(groups.values())
+
+
+def documents_from_routed(routed_pages: list[dict]) -> list[Document]:
+    """Convert grouped or raw routed pages into LlamaIndex Documents with full metadata."""
+    documents = []
+    for page in routed_pages:
+        if page["text"].strip():
+            documents.append(Document(
+                text=page["text"],
+                metadata={
+                    "page_start":  page.get("page_start", page.get("page_num")),
+                    "page_end":    page.get("page_end",   page.get("page_num")),
+                    "doc_type":    page["page_type"],
+                    "source_file": page["source_file"],
+                    "doc_id":      page["doc_id"],
+                }
+            ))
+    return documents
+
+
+
+
+def predict_doc_type(query: str, routed_pages: list[dict], llm) -> str:
+    """Ask the LLM which doc_type in the blob is most relevant to the query."""
+    seen = {}
+    for page in routed_pages:
+        doc_type = page["page_type"]
+        if doc_type not in seen:
+            seen[doc_type] = page["text"][:300]
+
+    descriptions = "\n".join(
+        f'- doc_type: "{doc_type}" | excerpt: "{excerpt}"'
+        for doc_type, excerpt in seen.items()
+    )
+    prompt = f"""/no_think
+User query: "{query}"
+
+Available document types and excerpts:
+{descriptions}
+
+Which doc_type is most likely to contain the answer? Respond with only the doc_type label."""
+    return llm.complete(prompt).text.strip().lower()
+
+
+def retrieve_by_doc_type(routed_pages: list[dict], doc_type: str) -> list[dict]:
+    """Return pages matching doc_type. Falls back to all pages if no match found."""
+    matched = [page for page in routed_pages if page["page_type"] == doc_type]
+    if not matched:
+        print(f"No pages matched doc_type '{doc_type}' — falling back to full index search. Patience por favor")
+        return routed_pages
+    return matched
 
 
 def load_documents(pdf_path: str = PDF_PATH, use_ocr: bool = False) -> list[Document]:
@@ -80,10 +153,16 @@ def expand_query(question: str, llm: LLM_MODEL) -> list[str]:
 
 
 def hybrid_retrieve(index: VectorStoreIndex, queries: list[str],
-                    embed_model: HuggingFaceEmbedding, top_k: int = 5, threshold: float = 0.6):
-    """Vector + BM25(keyword) retrieval across all expanded queries, deduplicated by node ID.
-    Threshold only applied to vector results — BM25 keyword matches always included."""
-    vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
+                    embed_model: HuggingFaceEmbedding, top_k: int = 5,
+                    threshold: float = 0.6, doc_type: str = None):
+    """Vector + BM25 retrieval across all expanded queries, deduplicated by node ID.
+    Vector retriever filters by doc_type at index level. BM25 filters post-retrieval."""
+    if doc_type:
+        filters = MetadataFilters(filters=[ExactMatchFilter(key="doc_type", value=doc_type)])
+        vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k, filters=filters)
+    else:
+        vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
+
     bm25_retriever = BM25Retriever.from_defaults(
         nodes=list(index.docstore.docs.values()), similarity_top_k=top_k
     )
@@ -94,6 +173,8 @@ def hybrid_retrieve(index: VectorStoreIndex, queries: list[str],
                 seen.add(node.node_id)
                 nodes.append(node)
         for node in bm25_retriever.retrieve(q):
+            if doc_type and node.node.metadata.get("doc_type") != doc_type:
+                continue
             if node.node_id not in seen:
                 seen.add(node.node_id)
                 nodes.append(node)
@@ -193,7 +274,9 @@ def run_experiments(index: VectorStoreIndex):
 
 
 if __name__ == "__main__":
-    docs = load_documents(use_ocr=False)
-    index = build_index(docs)
+    routed   = route_documents(PDF_PATH)
+    grouped  = group_by_doc_id(routed)
+    docs     = documents_from_routed(grouped)
+    index    = build_index(docs)
     run_experiments(index)
 

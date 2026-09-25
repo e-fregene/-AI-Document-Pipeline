@@ -49,13 +49,15 @@ Current page:
 
 
 def load_pages(pdf_path: str) -> list[dict]:
-    """Extract text from each page and attach page number + type metadata."""
+    """Extract text from each page and attach page number, source file, and type metadata."""
     reader = PdfReader(pdf_path)
+    source_file = os.path.basename(pdf_path)
     doc_pages = []
     for i, page in enumerate(reader.pages):
         text = page.extract_text() or ""
         doc_pages.append({
             "page_num": i,
+            "source_file": source_file,
             "text": text,
             "type": classify_page(text),
         })
@@ -84,6 +86,7 @@ def route_documents(pdf_path: str) -> list[dict]:
             "page_num": page["page_num"],
             "doc_id": doc_counter,
             "page_type": current_page_type,
+            "source_file": page["source_file"],
             "text": page["text"],
         })
 
