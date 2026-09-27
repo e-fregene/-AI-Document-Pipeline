@@ -198,12 +198,28 @@ def query(index: VectorStoreIndex, question: str, routed_pages: list[dict] = Non
     if predicted_type:
         print(f"Predicted doc_type: {predicted_type}")
 
-    expanded  = expand_query(question, llm)
-    nodes     = hybrid_retrieve(index, expanded, embed_model, doc_type=predicted_type)
+    expanded = expand_query(question, llm)
+    nodes    = hybrid_retrieve(index, expanded, embed_model, doc_type=predicted_type)
+
+    # If filtered retrieval returns nothing, retry across the full index
+    if not nodes and predicted_type:
+        print(f"No results for doc_type '{predicted_type}' — retrying without filter")
+        nodes = hybrid_retrieve(index, expanded, embed_model, doc_type=None)
+
+    if not nodes:
+        return "I couldn't find relevant content in the uploaded documents to answer that question."
+
     top_nodes = rerank(nodes, question)
+    if not top_nodes:
+        return "I couldn't find relevant content in the uploaded documents to answer that question."
 
     context = "\n\n".join(n.node.text for n in top_nodes)
-    prompt = f"Answer based on the document context below:\n\n{context}\n\nQuestion: {question}"
+    prompt = f"""Answer the question using only the document context below. Be specific and direct.
+
+Context:
+{context}
+
+Question: {question}"""
     answer = llm.complete(prompt).text.strip()
 
     print(f"\nQ: {question}")

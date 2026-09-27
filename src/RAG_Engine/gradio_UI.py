@@ -220,9 +220,11 @@ def _process_image(file_path: str) -> list[dict]:
     from Data_Extract.OCR_comparisons import PaddleOCRExtractor
 
     ocr = PaddleOCRExtractor()
-    img = np.array(Image.open(file_path))
-    spans = ocr.extract(img)
-    text = " ".join(s["text"] for s in spans)
+    img = Image.open(file_path).convert("RGB")  # strip alpha channel (RGBA crashes PaddleOCR)
+    spans = ocr.extract(np.array(img))
+    text = " ".join(s["text"] for s in spans if s.get("text"))
+    if not text.strip():
+        raise ValueError("OCR found no text in image — image may be blank or too low resolution")
     return [{
         "page_num":    0,
         "source_file": os.path.basename(file_path),
@@ -269,11 +271,15 @@ def process_files(files, mode):
     except ValueError as e:
         return str(e), None, None
 
-    doc_types  = list({p["page_type"] for p in all_routed})
-    status     = f"Ready — {len(docs)} doc(s) | {', '.join(doc_types)}"
+    doc_types     = list({p["page_type"] for p in all_routed})
+    success_names = list({p["source_file"] for p in all_routed})
+
+    status_lines = [f"Ready: {', '.join(success_names)} | {', '.join(doc_types)}"]
     if errors:
-        status += f" | Skipped: {'; '.join(errors)}"
-    return status, index, all_routed
+        for err in errors:
+            status_lines.append(f"Failed: {err}")
+
+    return "\n".join(status_lines), index, all_routed
 
 
 def chat(message, history, index_state, routed_state):
@@ -333,7 +339,7 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
                 interactive=False,
                 label="Status",
                 elem_id="status-box",
-                lines=1,
+                lines=3,
             )
             save_btn = gr.Button("Save Chat History", elem_id="save-btn")
             download = gr.File(label="Download", visible=False, elem_id="download-file")
