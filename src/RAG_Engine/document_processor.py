@@ -1,4 +1,6 @@
 import os
+import sys
+sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from PyPDF2 import PdfReader
 from dotenv import load_dotenv
@@ -110,11 +112,39 @@ def load_pages(pdf_path: str) -> list[dict]:
     return raw_pages
 
 
-def route_documents(pdf_path: str) -> list[dict]:
+def load_pages_ocr(pdf_path: str) -> list[dict]:
+    """OCR-based page extraction for scanned/image PDFs — uses PaddleOCR instead of PyPDF2."""
+    from Data_Extract.OCR_comparisons import render_page, PaddleOCRExtractor
+
+    source_file = os.path.basename(pdf_path)
+    reader      = PdfReader(pdf_path)
+    n_pages     = len(reader.pages)
+    ocr         = PaddleOCRExtractor()
+
+    raw_pages = []
+    for i in range(n_pages):
+        img   = render_page(pdf_path, i)
+        spans = ocr.extract(img)
+        text  = " ".join(s["text"] for s in spans if s.get("text"))
+        raw_pages.append({"page_num": i, "source_file": source_file, "text": text})
+
+    all_labels = []
+    for start in range(0, len(raw_pages), BATCH_SIZE):
+        batch = raw_pages[start: start + BATCH_SIZE]
+        all_labels.extend(batch_classify_pages(batch))
+
+    for page, label in zip(raw_pages, all_labels):
+        page["type"] = label
+
+    return raw_pages
+
+
+def route_documents(pdf_path: str, use_ocr: bool = False) -> list[dict]:
     """Detect document boundaries and assign doc_id per logical document.
+    use_ocr=True switches to PaddleOCR extraction (for scanned/image-based PDFs).
     Option 5: same-type consecutive pages skip the LLM boundary check entirely.
     Option 3: remaining boundary checks run in parallel via ThreadPoolExecutor."""
-    doc_pages = load_pages(pdf_path)
+    doc_pages = load_pages_ocr(pdf_path) if use_ocr else load_pages(pdf_path)
     results   = []
     doc_counter = 0
 

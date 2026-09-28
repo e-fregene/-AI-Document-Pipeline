@@ -326,7 +326,8 @@ def process_files(files, mode):
         name = os.path.basename(file.name)
         try:
             if ext in PDF_EXTENSIONS:
-                all_routed.extend(route_documents(file.name))
+                use_ocr = (mode == "Img Mode")
+                all_routed.extend(route_documents(file.name, use_ocr=use_ocr))
             elif ext in IMAGE_EXTENSIONS:
                 all_routed.extend(_process_image(file.name))
             else:
@@ -411,7 +412,7 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
             file_input = gr.File(
                 label="Upload Documents",
                 file_count="multiple",
-                file_types=[".pdf", ".png", ".jpg", ".jpeg", ".mp3", ".wav"],
+                file_types=[".pdf", ".png", ".jpg", ".jpeg"],
                 elem_id="file-upload",
             )
             mode_dropdown = gr.Dropdown(
