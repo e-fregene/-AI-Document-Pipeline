@@ -221,8 +221,14 @@ def query(index: VectorStoreIndex, question: str,
     if not top_nodes:
         return "I couldn't find relevant content in the uploaded documents to answer that question."
 
-    context = "\n\n".join(n.node.text for n in top_nodes)
+    context_blocks = []
+    for n in top_nodes:
+        source = n.node.metadata.get("source_file", "unknown")
+        context_blocks.append(f"[Source: {source}]\n{n.node.text}")
+    context = "\n\n".join(context_blocks)
+
     prompt = f"""Answer the question using only the document context below. Be specific and direct.
+Always mention which document (by filename) your answer comes from.
 
 Context:
 {context}

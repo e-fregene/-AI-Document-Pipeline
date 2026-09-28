@@ -390,11 +390,11 @@ def chat(message, history, index_state, routed_state, doc_type_filter, whimsy):
 
 def save_chat(history):
     if not history:
-        return None
+        return gr.update(visible=False)
     save_path = "/tmp/chat_history.json"
     with open(save_path, "w") as f:
         json.dump(history, f, indent=2)
-    return save_path
+    return gr.update(value=save_path, visible=True)
 
 
 with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
@@ -491,7 +491,7 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
         fn=save_chat,
         inputs=[chatbot],
         outputs=[download],
-    ).then(fn=lambda: gr.update(visible=True), outputs=[download])
+    )
 
 
 if __name__ == "__main__":
