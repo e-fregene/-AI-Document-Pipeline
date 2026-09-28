@@ -2,6 +2,8 @@ import sys
 import os
 import json
 import base64
+import time
+from collections import Counter
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(os.path.dirname(__file__))
 
@@ -74,16 +76,10 @@ body { margin: 0; background: #5AA4CF; }
     color: #F5F2EC !important;
 }
 
-#status-box textarea {
-    background: #F5F2EC !important;
-    border: 2px solid #1C1008 !important;
-    border-radius: 10px !important;
-    color: #1C1008 !important;
-    font-weight: 700 !important;
-    font-size: 12px !important;
-    min-height: 36px !important;
+#status-html {
+    border-radius: 12px !important;
+    overflow: hidden !important;
 }
-#status-box label > span { display: none !important; }
 
 /* ── RIGHT PANEL ── */
 #chat-col > .block,
@@ -167,6 +163,50 @@ body { margin: 0; background: #5AA4CF; }
     border-radius: 10px !important;
 }
 #download-file label > span { color: #D4892A !important; }
+
+/* Settings accordion */
+#settings-panel > .label-wrap {
+    background: #2A1A0C !important;
+    border-radius: 10px !important;
+    color: #D4892A !important;
+    font-weight: 700 !important;
+    padding: 8px 12px !important;
+}
+#settings-panel > .label-wrap span { color: #D4892A !important; }
+#settings-panel .block {
+    background: #1C1008 !important;
+    border-radius: 0 0 10px 10px !important;
+    padding: 12px !important;
+}
+#type-filter label > span {
+    color: #D4892A !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+}
+#type-filter .wrap, #type-filter input {
+    background: #2A1A0C !important;
+    border: 2px solid #3A2810 !important;
+    border-radius: 8px !important;
+    color: #F5F2EC !important;
+}
+#whimsy-slider label > span {
+    color: #D4892A !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.08em !important;
+}
+#whimsy-slider input[type=range] {
+    accent-color: #D4892A !important;
+}
+#whimsy-slider .output-number input {
+    background: #2A1A0C !important;
+    border: 2px solid #3A2810 !important;
+    border-radius: 6px !important;
+    color: #F5F2EC !important;
+}
 """
 
 HEADER_HTML = f"""
@@ -234,12 +274,50 @@ def _process_image(file_path: str) -> list[dict]:
     }]
 
 
-def process_files(files, mode):
-    """Process each file independently — PDFs via pipeline, images via OCR.
-    Failures on individual files are reported without stopping other files."""
-    if not files:
-        return "Waiting for upload...", None, None
+def _build_status_html(success_names, total_pages, n_docs, total_chunks,
+                       doc_types, elapsed, grouped, chunk_counts, errors):
+    s = '<div style="background:#1C1008;border-radius:12px;padding:16px;color:#F5F2EC;font-family:system-ui;font-size:13px;line-height:1.8;">'
+    s += '<div style="font-size:15px;font-weight:700;color:#D4892A;margin-bottom:10px;">📋 Document Info</div>'
 
+    if success_names:
+        s += '<div style="color:#7BC67E;font-weight:700;margin-bottom:6px;">✅ Successfully Processed:</div>'
+        for name in success_names:
+            s += f'<div style="margin-left:12px;">○ 📄 File: {name}</div>'
+        s += f'<div style="margin-left:12px;">○ 📑 Pages: {total_pages}</div>'
+        s += f'<div style="margin-left:12px;">○ 📚 Documents Found: {n_docs}</div>'
+        s += f'<div style="margin-left:12px;">○ ✂️ Chunks Created: {total_chunks}</div>'
+        type_labels = ", ".join(t.replace("_", " ").title() for t in sorted(doc_types))
+        s += f'<div style="margin-left:12px;">○ 🏷️ Types: {type_labels}</div>'
+        s += f'<div style="margin-left:12px;">○ ⏱️ Time: {elapsed:.1f}s</div>'
+
+        if grouped:
+            s += '<hr style="border:none;border-top:1px solid #3A2810;margin:10px 0;"/>'
+            parts = []
+            for group in grouped:
+                doc_id  = group["doc_id"]
+                chunks  = chunk_counts.get(doc_id, 0)
+                label   = group["page_type"].replace("_", " ").title()
+                p_start = group.get("page_start", 0) + 1
+                p_end   = group.get("page_end",   0) + 1
+                parts.append(f'· <b>{label}</b> (Pages {p_start}–{p_end}): {chunks} chunk{"s" if chunks != 1 else ""}')
+            s += '<div style="color:#aaa;font-size:12px;">' + " ".join(parts) + "</div>"
+
+    if errors:
+        s += '<div style="color:#FF6B6B;font-weight:700;margin-top:10px;">❌ Failed:</div>'
+        for err in errors:
+            s += f'<div style="margin-left:12px;color:#FF9999;">○ {err}</div>'
+
+    s += "</div>"
+    return s
+
+
+def process_files(files, mode):
+    """Process each file independently. Returns rich HTML status + pipeline state + doc types."""
+    _WAITING = '<div style="background:#1C1008;border-radius:12px;padding:14px;color:#aaa;font-size:13px;">Waiting for upload...</div>'
+    if not files:
+        return _WAITING, None, None, []
+
+    t_start    = time.time()
     all_routed = []
     errors     = []
 
@@ -248,20 +326,17 @@ def process_files(files, mode):
         name = os.path.basename(file.name)
         try:
             if ext in PDF_EXTENSIONS:
-                use_ocr = mode == "Img Mode"
-                routed  = route_documents(file.name)
-                all_routed.extend(routed)
+                all_routed.extend(route_documents(file.name))
             elif ext in IMAGE_EXTENSIONS:
-                routed = _process_image(file.name)
-                all_routed.extend(routed)
+                all_routed.extend(_process_image(file.name))
             else:
                 errors.append(f"{name}: unsupported type ({ext})")
         except Exception as e:
             errors.append(f"{name}: {e}")
 
     if not all_routed:
-        error_msg = " | ".join(errors) if errors else "No processable files."
-        return error_msg, None, None
+        html = _build_status_html([], 0, 0, 0, [], 0, [], {}, errors)
+        return html, None, None, []
 
     grouped = group_by_doc_id(all_routed)
     docs    = documents_from_routed(grouped)
@@ -269,20 +344,28 @@ def process_files(files, mode):
     try:
         index = build_index(docs)
     except ValueError as e:
-        return str(e), None, None
+        html = _build_status_html([], 0, 0, 0, [], 0, [], {}, [str(e)])
+        return html, None, None, []
 
+    elapsed       = time.time() - t_start
     doc_types     = list({p["page_type"] for p in all_routed})
-    success_names = list({p["source_file"] for p in all_routed})
+    success_names = list(dict.fromkeys(p["source_file"] for p in all_routed))
+    total_pages   = len(all_routed)
+    n_docs        = len(grouped)
+    chunk_counts  = Counter(
+        node.metadata.get("doc_id")
+        for node in index.docstore.docs.values()
+    )
+    total_chunks  = sum(chunk_counts.values())
 
-    status_lines = [f"Ready: {', '.join(success_names)} | {', '.join(doc_types)}"]
-    if errors:
-        for err in errors:
-            status_lines.append(f"Failed: {err}")
+    html = _build_status_html(
+        success_names, total_pages, n_docs, total_chunks,
+        doc_types, elapsed, grouped, chunk_counts, errors
+    )
+    return html, index, all_routed, doc_types
 
-    return "\n".join(status_lines), index, all_routed
 
-
-def chat(message, history, index_state, routed_state):
+def chat(message, history, index_state, routed_state, doc_type_filter, whimsy):
     if not message.strip():
         return history, ""
     if index_state is None:
@@ -292,7 +375,9 @@ def chat(message, history, index_state, routed_state):
         ]
         return history, ""
     try:
-        answer = query(index_state, message, routed_pages=routed_state)
+        forced = doc_type_filter if doc_type_filter and doc_type_filter != "Auto (predict)" else None
+        answer = query(index_state, message, routed_pages=routed_state,
+                       forced_doc_type=forced, temperature=float(whimsy))
     except Exception as e:
         answer = f"Error: {e}"
 
@@ -314,8 +399,9 @@ def save_chat(history):
 
 with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
 
-    index_state  = gr.State(None)
-    routed_state = gr.State(None)
+    index_state      = gr.State(None)
+    routed_state     = gr.State(None)
+    doc_types_state  = gr.State([])
 
     gr.HTML(HEADER_HTML)
 
@@ -334,13 +420,25 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
                 label="Upload Type",
                 elem_id="mode-drop",
             )
-            status_box = gr.Textbox(
-                value="Waiting for upload...",
-                interactive=False,
-                label="Status",
-                elem_id="status-box",
-                lines=3,
+            status_html = gr.HTML(
+                value='<div style="background:#1C1008;border-radius:12px;padding:14px;color:#aaa;font-size:13px;">Waiting for upload...</div>',
+                elem_id="status-html",
             )
+            with gr.Accordion("⚙️ Settings", open=False, elem_id="settings-panel"):
+                doc_type_filter = gr.Dropdown(
+                    choices=["Auto (predict)"],
+                    value="Auto (predict)",
+                    label="Filter by Document Type",
+                    elem_id="type-filter",
+                )
+                whimsy_slider = gr.Slider(
+                    minimum=0.0,
+                    maximum=1.0,
+                    value=0.7,
+                    step=0.05,
+                    label="Whimsy",
+                    elem_id="whimsy-slider",
+                )
             save_btn = gr.Button("Save Chat History", elem_id="save-btn")
             download = gr.File(label="Download", visible=False, elem_id="download-file")
 
@@ -356,24 +454,36 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
                 send_btn  = gr.Button("→ Send", variant="primary", elem_id="send-btn")
                 clear_btn = gr.Button("Clear", elem_id="clear-btn")
 
+    def _update_filter(doc_types):
+        choices = ["Auto (predict)"] + sorted(doc_types)
+        return gr.update(choices=choices, value="Auto (predict)")
+
     file_input.change(
         fn=process_files,
         inputs=[file_input, mode_dropdown],
-        outputs=[status_box, index_state, routed_state],
+        outputs=[status_html, index_state, routed_state, doc_types_state],
+    ).then(
+        fn=_update_filter,
+        inputs=[doc_types_state],
+        outputs=[doc_type_filter],
     )
     mode_dropdown.change(
         fn=process_files,
         inputs=[file_input, mode_dropdown],
-        outputs=[status_box, index_state, routed_state],
+        outputs=[status_html, index_state, routed_state, doc_types_state],
+    ).then(
+        fn=_update_filter,
+        inputs=[doc_types_state],
+        outputs=[doc_type_filter],
     )
     send_btn.click(
         fn=chat,
-        inputs=[user_input, chatbot, index_state, routed_state],
+        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider],
         outputs=[chatbot, user_input],
     )
     user_input.submit(
         fn=chat,
-        inputs=[user_input, chatbot, index_state, routed_state],
+        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider],
         outputs=[chatbot, user_input],
     )
     clear_btn.click(fn=lambda: [], outputs=[chatbot])

@@ -74,7 +74,7 @@ def predict_doc_type(query: str, routed_pages: list[dict], llm) -> str:
     for page in routed_pages:
         doc_type = page["page_type"]
         if doc_type not in seen:
-            seen[doc_type] = page["text"][:300]
+            seen[doc_type] = page["text"][:150]
 
     descriptions = "\n".join(
         f'- doc_type: "{doc_type}" | excerpt: "{excerpt}"'
@@ -136,9 +136,9 @@ def build_index(documents: list[Document]) -> VectorStoreIndex:
     return VectorStoreIndex(nodes, embed_model=embed_model)
 
 
-def load_model(model: str = LLM_MODEL) -> Groq:
+def load_model(model: str = LLM_MODEL, temperature: float = 0.7) -> Groq:
     """Qwen3-27B via Groq API — cloud-hosted, free tier, capped to stay within OTPM limits."""
-    return Groq(model=model, api_key=os.getenv("GROQ_API_KEY"), max_tokens=500)
+    return Groq(model=model, api_key=os.getenv("GROQ_API_KEY"), max_tokens=500, temperature=temperature)
 
 
 def expand_query(question: str, llm: LLM_MODEL) -> list[str]:
@@ -189,14 +189,22 @@ def rerank(nodes, question: str, top_n: int = 3):
     return reranker.postprocess_nodes(nodes, query_bundle=QueryBundle(question))
 
 
-def query(index: VectorStoreIndex, question: str, routed_pages: list[dict] = None) -> str:
-    """Full RAG pipeline: predict doc_type → expand query → hybrid retrieve → rerank → answer."""
-    llm = load_model()
+def query(index: VectorStoreIndex, question: str,
+          routed_pages: list[dict] = None, forced_doc_type: str = None,
+          temperature: float = 0.7) -> str:
+    """Full RAG pipeline: predict doc_type → expand query → hybrid retrieve → rerank → answer.
+    forced_doc_type bypasses prediction and filters directly to that type."""
+    llm = load_model(temperature=temperature)
     embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
 
-    predicted_type = predict_doc_type(question, routed_pages, llm) if routed_pages else None
-    if predicted_type:
+    if forced_doc_type:
+        predicted_type = forced_doc_type
+        print(f"Forced doc_type: {predicted_type}")
+    elif routed_pages:
+        predicted_type = predict_doc_type(question, routed_pages, llm)
         print(f"Predicted doc_type: {predicted_type}")
+    else:
+        predicted_type = None
 
     expanded = expand_query(question, llm)
     nodes    = hybrid_retrieve(index, expanded, embed_model, doc_type=predicted_type)

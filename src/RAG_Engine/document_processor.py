@@ -10,7 +10,7 @@ load_dotenv()
 llm       = Groq(model="qwen/qwen3.8-27b", api_key=os.getenv("GROQ_API_KEY"), max_tokens=30)
 llm_batch = Groq(model="qwen/qwen3.8-27b", api_key=os.getenv("GROQ_API_KEY"), max_tokens=400)
 
-BATCH_SIZE = 10  # pages per batch classification call
+BATCH_SIZE = 5   # pages per batch classification call — keeps input tokens under ITPM limit
 
 
 def classify_page(text: str) -> str:
@@ -41,7 +41,7 @@ def batch_classify_pages(pages: list[dict]) -> list[str]:
         if not text or len(text.strip()) < 8:
             page_blocks.append(f"--- Page {i + 1} ---\n[blank page]")
         else:
-            page_blocks.append(f"--- Page {i + 1} ---\n{text[:400]}")
+            page_blocks.append(f"--- Page {i + 1} ---\n{text[:200]}")
 
     prompt = f"""/no_think
 Classify each document page below. Return exactly one label per page, one per line, in order.
