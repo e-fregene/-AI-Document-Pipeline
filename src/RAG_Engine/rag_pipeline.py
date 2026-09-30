@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
+from concurrent.futures import ThreadPoolExecutor
 from dotenv import load_dotenv
 
 from llama_index.core import VectorStoreIndex
@@ -11,21 +12,35 @@ from llama_index.core.vector_stores import MetadataFilters, ExactMatchFilter
 from llama_index.core.postprocessor import SentenceTransformerRerank
 from llama_index.core import QueryBundle
 from llama_index.embeddings.huggingface import HuggingFaceEmbedding
-
 from llama_index.llms.groq import Groq
-
 from llama_index.retrievers.bm25 import BM25Retriever
-from Data_Extract.PyMuPDF_Extraction import PDFExtractor
-from Data_Extract.OCR_comparisons import render_page, PaddleOCRExtractor
 from document_processor import route_documents
 
 load_dotenv()
 
-PDF_PATH = "src/data/Blob File Sample.pdf"
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"  # BGE: better domain discrimination. score spread reveals true gaps
-LLM_MODEL = "qwen/qwen3.8-27b"
+PDF_PATH         = "src/data/Blob File Sample.pdf"
+EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
+LLM_MODEL        = "qwen/qwen3.8-27b"
+
+# Module-level caches — loaded once on first use, reused across all queries
+_embed_model = None
+_reranker    = None
 
 
+def _get_embed_model() -> HuggingFaceEmbedding:
+    global _embed_model
+    if _embed_model is None:
+        _embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
+    return _embed_model
+
+
+def _get_reranker() -> SentenceTransformerRerank:
+    global _reranker
+    if _reranker is None:
+        _reranker = SentenceTransformerRerank(
+            model="cross-encoder/ms-marco-MiniLM-L-2-v2", top_n=3
+        )
+    return _reranker
 
 
 def group_by_doc_id(routed_pages: list[dict]) -> list[dict]:
@@ -43,8 +58,8 @@ def group_by_doc_id(routed_pages: list[dict]) -> list[dict]:
                 "text":        page["text"],
             }
         else:
-            groups[doc_id]["text"]     += "\n\n" + page["text"]
-            groups[doc_id]["page_end"]  = page["page_num"]
+            groups[doc_id]["text"]    += "\n\n" + page["text"]
+            groups[doc_id]["page_end"] = page["page_num"]
     return list(groups.values())
 
 
@@ -66,10 +81,8 @@ def documents_from_routed(routed_pages: list[dict]) -> list[Document]:
     return documents
 
 
-
-
 def predict_doc_type(query: str, routed_pages: list[dict], llm) -> str:
-    """Ask the LLM which doc_type in the blob is most relevant to the query."""
+    """Ask the LLM which doc_type in the index is most relevant to the query."""
     seen = {}
     for page in routed_pages:
         doc_type = page["page_type"]
@@ -90,45 +103,11 @@ Which doc_type is most likely to contain the answer? Respond with only the doc_t
     return llm.complete(prompt).text.strip().lower()
 
 
-def retrieve_by_doc_type(routed_pages: list[dict], doc_type: str) -> list[dict]:
-    """Return pages matching doc_type. Falls back to all pages if no match found."""
-    matched = [page for page in routed_pages if page["page_type"] == doc_type]
-    if not matched:
-        print(f"No pages matched doc_type '{doc_type}' — falling back to full index search. Patience por favor")
-        return routed_pages
-    return matched
-
-
-def load_documents(pdf_path: str = PDF_PATH, use_ocr: bool = False) -> list[Document]:
-    """Extract text per page. use_ocr=True switches to PaddleOCR for image-based PDFs."""
-    import pymupdf
-    doc = pymupdf.open(pdf_path)
-    ocr = PaddleOCRExtractor() if use_ocr else None
-    documents = []
-    for page_num in range(len(doc)):
-        if use_ocr:
-            img = render_page(pdf_path, page_num)
-            spans = ocr.extract(img)
-        else:
-            extractor = PDFExtractor(pdf_path)
-            spans = extractor.extract_text_with_bbox(page_num)
-            extractor.close()
-        page_text = " ".join(s["text"] for s in spans)
-        if page_text.strip():
-            documents.append(Document(
-                text=page_text,
-                metadata={"page": page_num, "source": pdf_path}
-            ))
-    doc.close()
-    print(f"Loaded {len(documents)} page(s) from {os.path.basename(pdf_path)}")
-    return documents
-
-
 def build_index(documents: list[Document]) -> VectorStoreIndex:
     """Semantic-chunk the documents then store embeddings in an in-memory vector index."""
-    embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
-    splitter = SemanticSplitterNodeParser(embed_model=embed_model)
-    nodes = splitter.get_nodes_from_documents(documents)
+    embed_model = _get_embed_model()
+    splitter    = SemanticSplitterNodeParser(embed_model=embed_model)
+    nodes       = splitter.get_nodes_from_documents(documents)
     if not nodes:
         raise ValueError("No chunks created — PDF may be image-based with no extractable text.")
     print(f"Total semantic chunks: {len(nodes)}")
@@ -141,24 +120,23 @@ def load_model(model: str = LLM_MODEL, temperature: float = 0.7) -> Groq:
     return Groq(model=model, api_key=os.getenv("GROQ_API_KEY"), max_tokens=500, temperature=temperature)
 
 
-def expand_query(question: str, llm: LLM_MODEL) -> list[str]:
-    """Ask Gemini to rewrite the question 2 ways to improve retrieval coverage."""
+def expand_query(question: str, llm: Groq) -> list[str]:
+    """Rewrite the question 2 ways to improve retrieval coverage."""
     prompt = (
         "Rewrite this question in 2 different ways to improve document retrieval. "
         "Return only the rewritten questions, one per line:\n\n" + question
     )
-    result = llm.complete(prompt)
+    result   = llm.complete(prompt)
     variants = [q.strip() for q in result.text.strip().split("\n") if q.strip()]
     return [question] + variants[:2]
 
 
 def hybrid_retrieve(index: VectorStoreIndex, queries: list[str],
-                    embed_model: HuggingFaceEmbedding, top_k: int = 5,
-                    threshold: float = 0.6, doc_type: str = None):
+                    top_k: int = 5, threshold: float = 0.6, doc_type: str = None):
     """Vector + BM25 retrieval across all expanded queries, deduplicated by node ID.
     Vector retriever filters by doc_type at index level. BM25 filters post-retrieval."""
     if doc_type:
-        filters = MetadataFilters(filters=[ExactMatchFilter(key="doc_type", value=doc_type)])
+        filters          = MetadataFilters(filters=[ExactMatchFilter(key="doc_type", value=doc_type)])
         vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k, filters=filters)
     else:
         vector_retriever = VectorIndexRetriever(index=index, similarity_top_k=top_k)
@@ -181,38 +159,35 @@ def hybrid_retrieve(index: VectorStoreIndex, queries: list[str],
     return nodes
 
 
-def rerank(nodes, question: str, top_n: int = 3):
+def rerank(nodes, question: str):
     """Cross-encoder re-scores retrieved chunks by actual relevance to the question."""
-    reranker = SentenceTransformerRerank(
-        model="cross-encoder/ms-marco-MiniLM-L-2-v2", top_n=top_n
-    )
-    return reranker.postprocess_nodes(nodes, query_bundle=QueryBundle(question))
+    return _get_reranker().postprocess_nodes(nodes, query_bundle=QueryBundle(question))
 
 
 def query(index: VectorStoreIndex, question: str,
           routed_pages: list[dict] = None, forced_doc_type: str = None,
           temperature: float = 0.7) -> str:
     """Full RAG pipeline: predict doc_type → expand query → hybrid retrieve → rerank → answer.
-    forced_doc_type bypasses prediction and filters directly to that type."""
+    predict_doc_type and expand_query run in parallel. forced_doc_type bypasses prediction."""
     llm = load_model(temperature=temperature)
-    embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
 
-    if forced_doc_type:
-        predicted_type = forced_doc_type
-        print(f"Forced doc_type: {predicted_type}")
-    elif routed_pages:
-        predicted_type = predict_doc_type(question, routed_pages, llm)
-        print(f"Predicted doc_type: {predicted_type}")
-    else:
-        predicted_type = None
+    # predict_doc_type and expand_query are independent — run them concurrently
+    should_predict = routed_pages and not forced_doc_type
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_type     = executor.submit(predict_doc_type, question, routed_pages, llm) if should_predict else None
+        future_expanded = executor.submit(expand_query, question, llm)
 
-    expanded = expand_query(question, llm)
-    nodes    = hybrid_retrieve(index, expanded, embed_model, doc_type=predicted_type)
+        predicted_type = forced_doc_type if forced_doc_type else (future_type.result() if should_predict else None)
+        expanded       = future_expanded.result()
+
+    print(f"{'Forced' if forced_doc_type else 'Predicted'} doc_type: {predicted_type}")
+
+    nodes = hybrid_retrieve(index, expanded, doc_type=predicted_type)
 
     # If filtered retrieval returns nothing, retry across the full index
     if not nodes and predicted_type:
         print(f"No results for doc_type '{predicted_type}' — retrying without filter")
-        nodes = hybrid_retrieve(index, expanded, embed_model, doc_type=None)
+        nodes = hybrid_retrieve(index, expanded, doc_type=None)
 
     if not nodes:
         return "I couldn't find relevant content in the uploaded documents to answer that question."
@@ -257,4 +232,3 @@ if __name__ == "__main__":
     ]
     for question in test_questions:
         query(index, question, routed_pages=routed)
-

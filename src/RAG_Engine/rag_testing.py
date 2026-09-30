@@ -13,6 +13,7 @@ from rag_pipeline import (
     EMBED_MODEL_NAME, PDF_PATH,
     route_documents, group_by_doc_id, documents_from_routed,
     build_index, load_model, expand_query, hybrid_retrieve, rerank,
+    _get_embed_model,
 )
 
 
@@ -57,7 +58,6 @@ def run_experiments(index: VectorStoreIndex):
         "How does CFPB oversight affect credit availability or loan access?",
         "What methodology was used to estimate the costs?",
     ]
-    embed_model = HuggingFaceEmbedding(model_name=EMBED_MODEL_NAME)
     llm = load_model()
 
     for exp in experiments:
@@ -67,7 +67,7 @@ def run_experiments(index: VectorStoreIndex):
 
         for q in test_queries:
             expanded  = expand_query(q, llm)
-            nodes     = hybrid_retrieve(index, expanded, embed_model)
+            nodes     = hybrid_retrieve(index, expanded)
             top_nodes = rerank(nodes, q)
 
             print(f"\n  Q: {q}  →  {len(top_nodes)} chunk(s) returned")

@@ -252,15 +252,23 @@ HEADER_HTML = f"""
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 PDF_EXTENSIONS   = {".pdf"}
 
+_ocr = None
+
+def _get_ocr():
+    global _ocr
+    if _ocr is None:
+        from Data_Extract.OCR_comparisons import PaddleOCRExtractor
+        _ocr = PaddleOCRExtractor()
+    return _ocr
+
 
 def _process_image(file_path: str) -> list[dict]:
     """OCR a standalone image and return a single synthetic routed page."""
     import numpy as np
     from PIL import Image
-    from Data_Extract.OCR_comparisons import PaddleOCRExtractor
 
-    ocr = PaddleOCRExtractor()
-    img = Image.open(file_path).convert("RGB")  # strip alpha channel (RGBA crashes PaddleOCR)
+    ocr   = _get_ocr()
+    img   = Image.open(file_path).convert("RGB")  # strip alpha channel (RGBA crashes PaddleOCR)
     spans = ocr.extract(np.array(img))
     text = " ".join(s["text"] for s in spans if s.get("text"))
     if not text.strip():
