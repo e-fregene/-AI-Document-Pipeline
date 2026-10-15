@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import uuid
 import base64
 import time
 from collections import Counter
@@ -252,7 +253,8 @@ HEADER_HTML = f"""
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 PDF_EXTENSIONS   = {".pdf"}
 
-_ocr = None
+_ocr          = None
+_chat_sessions: dict = {}   # session_id → list of message dicts
 
 def _get_ocr():
     global _ocr
@@ -319,11 +321,13 @@ def _build_status_html(success_names, total_pages, n_docs, total_chunks,
     return s
 
 
-def process_files(files, mode):
+def process_files(files, mode, session_id):
     """Process each file independently. Returns rich HTML status + pipeline state + doc types."""
     _WAITING = '<div style="background:#1C1008;border-radius:12px;padding:14px;color:#aaa;font-size:13px;">Waiting for upload...</div>'
     if not files:
         return _WAITING, None, None, []
+    if not session_id:
+        session_id = str(uuid.uuid4())
 
     t_start    = time.time()
     all_routed = []
@@ -351,7 +355,7 @@ def process_files(files, mode):
     docs    = documents_from_routed(grouped)
 
     try:
-        index = build_index(docs)
+        index = build_index(docs, namespace=session_id)
     except ValueError as e:
         html = _build_status_html([], 0, 0, 0, [], 0, [], {}, [str(e)])
         return html, None, None, []
@@ -374,7 +378,7 @@ def process_files(files, mode):
     return html, index, all_routed, doc_types
 
 
-def chat(message, history, index_state, routed_state, doc_type_filter, whimsy):
+def chat(message, history, index_state, routed_state, doc_type_filter, whimsy, session_id):
     if not message.strip():
         return history, ""
     if index_state is None:
@@ -394,13 +398,16 @@ def chat(message, history, index_state, routed_state, doc_type_filter, whimsy):
         {"role": "user",      "content": message},
         {"role": "assistant", "content": answer},
     ]
+    if session_id:
+        _chat_sessions[session_id] = history
     return history, ""
 
 
-def save_chat(history):
+def save_chat(session_id):
+    history = _chat_sessions.get(session_id, [])
     if not history:
         return gr.update(visible=False)
-    save_path = "/tmp/chat_history.json"
+    save_path = f"/tmp/chat_history_{session_id[:8]}.json"
     with open(save_path, "w") as f:
         json.dump(history, f, indent=2)
     return gr.update(value=save_path, visible=True)
@@ -411,6 +418,7 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
     index_state      = gr.State(None)
     routed_state     = gr.State(None)
     doc_types_state  = gr.State([])
+    session_id_state = gr.State(None)
 
     gr.HTML(HEADER_HTML)
 
@@ -467,9 +475,11 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
         choices = ["Auto (predict)"] + sorted(doc_types)
         return gr.update(choices=choices, value="Auto (predict)")
 
+    demo.load(fn=lambda: str(uuid.uuid4()), outputs=[session_id_state])
+
     file_input.change(
         fn=process_files,
-        inputs=[file_input, mode_dropdown],
+        inputs=[file_input, mode_dropdown, session_id_state],
         outputs=[status_html, index_state, routed_state, doc_types_state],
     ).then(
         fn=_update_filter,
@@ -478,7 +488,7 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
     )
     mode_dropdown.change(
         fn=process_files,
-        inputs=[file_input, mode_dropdown],
+        inputs=[file_input, mode_dropdown, session_id_state],
         outputs=[status_html, index_state, routed_state, doc_types_state],
     ).then(
         fn=_update_filter,
@@ -487,18 +497,18 @@ with gr.Blocks(title="Doc Q&A", css=CSS) as demo:
     )
     send_btn.click(
         fn=chat,
-        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider],
+        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider, session_id_state],
         outputs=[chatbot, user_input],
     )
     user_input.submit(
         fn=chat,
-        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider],
+        inputs=[user_input, chatbot, index_state, routed_state, doc_type_filter, whimsy_slider, session_id_state],
         outputs=[chatbot, user_input],
     )
     clear_btn.click(fn=lambda: [], outputs=[chatbot])
     save_btn.click(
         fn=save_chat,
-        inputs=[chatbot],
+        inputs=[session_id_state],
         outputs=[download],
     )
 
