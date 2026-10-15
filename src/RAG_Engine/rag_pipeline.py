@@ -103,15 +103,34 @@ Which doc_type is most likely to contain the answer? Respond with only the doc_t
     return llm.complete(prompt).text.strip().lower()
 
 
-def build_index(documents: list[Document]) -> VectorStoreIndex:
-    """Semantic-chunk the documents then store embeddings in an in-memory vector index."""
+def build_index(documents: list[Document], namespace: str = None) -> VectorStoreIndex:
+    """Semantic-chunk the documents then store embeddings in a vector index.
+    Uses Pinecone when PINECONE_API_KEY is set and namespace is provided, otherwise in-memory."""
     embed_model = _get_embed_model()
     splitter    = SemanticSplitterNodeParser(embed_model=embed_model)
     nodes       = splitter.get_nodes_from_documents(documents)
     if not nodes:
         raise ValueError("No chunks created — PDF may be image-based with no extractable text.")
     print(f"Total semantic chunks: {len(nodes)}")
-    print(f"Sample chunk:\n{nodes[0].text[:300]}\n")
+
+    pinecone_key = os.getenv("PINECONE_API_KEY")
+    if namespace and pinecone_key:
+        from pinecone import Pinecone
+        from llama_index.vector_stores.pinecone import PineconeVectorStore
+        from llama_index.core import StorageContext
+        from llama_index.core.storage.docstore import SimpleDocumentStore
+
+        pc             = Pinecone(api_key=pinecone_key)
+        pinecone_index = pc.Index(os.getenv("PINECONE_INDEX_NAME", "doc-qa"))
+        pinecone_index.delete(delete_all=True, namespace=namespace)
+
+        vector_store    = PineconeVectorStore(pinecone_index=pinecone_index, namespace=namespace)
+        storage_context = StorageContext.from_defaults(
+            vector_store=vector_store,
+            docstore=SimpleDocumentStore(),
+        )
+        return VectorStoreIndex(nodes, storage_context=storage_context, embed_model=embed_model)
+
     return VectorStoreIndex(nodes, embed_model=embed_model)
 
 
